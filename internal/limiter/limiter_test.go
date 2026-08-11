@@ -3,7 +3,9 @@ package limiter
 import (
 	"bufio"
 	"context"
+	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -150,38 +152,70 @@ func (f *fakeRedis) serve() {
 			defer c.Close()
 			br := bufio.NewReader(c)
 			for {
-				line, err := br.ReadString('\n')
-				if err != nil {
+				// Read one complete RESP command before answering. Reading the
+				// whole command first is what makes wire() deterministic: the
+				// client only unblocks once we reply, so by then every argument
+				// -- including the multi-line Lua script and the key args that
+				// follow it -- has already been recorded.
+				if !f.readCommand(br) {
 					return
 				}
 				f.mu.Lock()
-				f.received = append(f.received, line)
 				hangup := f.hangup
+				reply := f.reply
 				f.mu.Unlock()
 				if hangup {
 					return
 				}
-				if strings.HasPrefix(line, "*") {
-					continue
-				}
-				if strings.HasPrefix(line, "$") {
-					continue
-				}
-				// A payload line: once we have seen the tail of a command,
-				// answer it. The store sends exactly one command per call.
-				if strings.Contains(line, "EVAL") || f.sawFullCommand() {
-					c.Write([]byte(f.reply))
-				}
+				c.Write([]byte(reply))
 			}
 		}(conn)
 	}
 }
 
-func (f *fakeRedis) sawFullCommand() bool {
+// readCommand consumes one RESP array command, recording every byte it reads.
+// Bulk strings are read by their declared length rather than by line, so a
+// payload that contains newlines (the Lua script) is captured whole. It
+// returns false when the connection is exhausted or malformed.
+func (f *fakeRedis) readCommand(br *bufio.Reader) bool {
+	header, err := br.ReadString('\n')
+	if err != nil {
+		return false
+	}
+	f.record(header)
+	if !strings.HasPrefix(header, "*") {
+		return true
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(header[1:]))
+	if err != nil {
+		return false
+	}
+	for i := 0; i < n; i++ {
+		lenLine, err := br.ReadString('\n')
+		if err != nil {
+			return false
+		}
+		f.record(lenLine)
+		if !strings.HasPrefix(lenLine, "$") {
+			continue
+		}
+		blen, err := strconv.Atoi(strings.TrimSpace(lenLine[1:]))
+		if err != nil || blen < 0 {
+			return false
+		}
+		buf := make([]byte, blen+2) // bulk payload plus its trailing CRLF
+		if _, err := io.ReadFull(br, buf); err != nil {
+			return false
+		}
+		f.record(string(buf))
+	}
+	return true
+}
+
+func (f *fakeRedis) record(s string) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	// header + 5 arg pairs for EVAL script 2 k1 k2 ttl
-	return len(f.received) >= 11
+	f.received = append(f.received, s)
+	f.mu.Unlock()
 }
 
 func (f *fakeRedis) wire() string {
