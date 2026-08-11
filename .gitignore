@@ -1,0 +1,16 @@
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+target/
+.env
+*.dmg
+*.jpg
+*.csv
+# keep CSV test data / fixtures
+!**/tests/**/*.csv
+!**/test/**/*.csv
+!**/fixtures/**/*.csv
+!**/__fixtures__/**/*.csv
+!**/testdata/**/*.csv
+!**/test-data/**/*.csv

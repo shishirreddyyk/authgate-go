@@ -1,0 +1,22 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  authgate:
+    build: .
+    ports: ["8080:8080"]
+    environment:
+      AUTHGATE_ADDR: ":8080"
+      AUTHGATE_REDIS: "redis:6379"
+      AUTHGATE_PEPPER: "compose-dev-pepper"
+      AUTHGATE_LIMIT: "60"
+      AUTHGATE_WINDOW: "1m"
+    depends_on:
+      redis:
+        condition: service_healthy
